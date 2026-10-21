@@ -1,0 +1,36 @@
+:root {
+  --bg-main: #EEF1F6;
+  --surface-primary: #F5F7FB;
+  --surface-secondary: #E8ECF3;
+  --surface-tertiary: #DFE4EC;
+  
+  --text-primary: #20283A;
+  --text-secondary: #6F7A90;
+  --text-muted: #9AA5B8;
+  
+  --accent-primary: #526DDB;
+  --accent-secondary: #7B8FF0;
+  --accent-glow: rgba(82, 109, 219, 0.25);
+  
+  --status-success: #27876D;
+  --status-warning: #D99742;
+  --status-danger: #D85E69;
+  
+  --chart-grid: #DCE2EC;
+  --chart-c0: #526DDB;
+  --chart-c1: #D85E69;
+  --chart-c2: #27876D;
+  
+  --shadow-light: #ffffff;
+  --shadow-dark: #d8dde7;
+  --shadow-darker: #c9cfdc;
+
+  --clay-raised: 8px 8px 20px var(--shadow-dark), -8px -8px 20px var(--shadow-light);
+  --clay-raised-sm: 4px 4px 10px var(--shadow-dark), -4px -4px 10px var(--shadow-light);
+  --clay-raised-lg: 12px 12px 28px var(--shadow-dark), -12px -12px 28px var(--shadow-light);
+  --clay-inset: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
+  --clay-inset-sm: inset 2px 2px 4px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light);
+  --clay-btn: 5px 5px 12px var(--shadow-dark), -5px -5px 12px var(--shadow-light);
+  --clay-btn-active: inset 2px 2px 5px var(--shadow-dark), inset -2px -2px 5px var(--shadow-light);
+  --clay-accent: 6px 6px 16px var(--accent-glow), -4px -4px 12px var(--shadow-light);
+}
