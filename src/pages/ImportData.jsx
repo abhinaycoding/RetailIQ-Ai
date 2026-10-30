@@ -10,20 +10,65 @@ import {
   Info,
   X,
   FileText,
-  Check
+  Check,
+  ShoppingCart,
+  Receipt,
+  Users,
+  Sparkles,
+  HelpCircle
 } from 'lucide-react';
 import Papa from 'papaparse';
 import { useData } from '../context/DataContext';
 import { SaasCard } from '../components/ui/SaasCard';
-import { processTransactions } from '../services/segmentationService';
+import { processDataset, parseDateString } from '../services/segmentationService';
 import { formatNumber, formatCurrency } from '../utils/formatters';
 
-const CANONICAL_FIELDS = [
-  { key: 'customerIdCol', label: 'Customer ID', required: true, hints: ['customer', 'cust_id', 'customerid', 'user_id', 'client_id'] },
-  { key: 'orderIdCol', label: 'Order / Invoice ID', required: true, hints: ['invoice', 'order', 'invoiceno', 'order_id', 'transaction_id'] },
-  { key: 'dateCol', label: 'Order Date', required: true, hints: ['date', 'invoicedate', 'order_date', 'timestamp', 'created_at'] },
-  { key: 'quantityCol', label: 'Item Quantity', required: true, hints: ['quantity', 'qty', 'units', 'items'] },
-  { key: 'unitPriceCol', label: 'Unit Price / Amount', required: true, hints: ['price', 'unitprice', 'amount', 'item_price', 'total', 'rate'] }
+// Available data schemas supported by RetailIQ
+const DATASET_MODES = [
+  {
+    id: 'itemized',
+    name: 'Itemized Transactions',
+    badge: 'Basket Items (Qty × Price)',
+    description: 'Line-item retail records with separate Quantity and Unit Price columns (e.g. Online Retail, Shopify).',
+    icon: ShoppingCart,
+    fields: [
+      { key: 'customerIdCol', label: 'Customer ID', required: true, expectedType: 'id', hints: ['customer', 'cust_id', 'customerid', 'user_id', 'client_id', 'client', 'account', 'email', 'buyer', 'member_id', 'id'] },
+      { key: 'orderIdCol', label: 'Order / Invoice ID', required: true, expectedType: 'id', hints: ['invoice', 'order', 'invoiceno', 'order_id', 'transaction_id', 'trans_id', 'receipt', 'bill'] },
+      { key: 'dateCol', label: 'Order Date', required: true, expectedType: 'date', hints: ['date', 'invoicedate', 'order_date', 'timestamp', 'created_at', 'purchase_date', 'time'] },
+      { key: 'quantityCol', label: 'Item Quantity', required: true, expectedType: 'numeric', hints: ['quantity', 'qty', 'units', 'items', 'count', 'volume'] },
+      { key: 'unitPriceCol', label: 'Unit Price / Amount', required: true, expectedType: 'numeric', hints: ['unitprice', 'price', 'item_price', 'rate', 'cost', 'amount'] },
+      { key: 'totalAmountCol', label: 'Line Total (Optional Override)', required: false, expectedType: 'numeric', hints: ['total', 'line_total', 'linetotal', 'subtotal', 'sales', 'spend'] }
+    ]
+  },
+  {
+    id: 'order_total',
+    name: 'Order-Level Transactions',
+    badge: 'Single Amount per Order',
+    description: 'Flat invoice or order records containing a single Total Amount column (e.g. Stripe, Square, PayPal, QuickBooks).',
+    icon: Receipt,
+    fields: [
+      { key: 'customerIdCol', label: 'Customer ID', required: true, expectedType: 'id', hints: ['customer', 'cust_id', 'customerid', 'user_id', 'client_id', 'client', 'account', 'email', 'buyer', 'member_id', 'id'] },
+      { key: 'orderIdCol', label: 'Order / Invoice ID', required: true, expectedType: 'id', hints: ['invoice', 'order', 'invoiceno', 'order_id', 'transaction_id', 'trans_id', 'receipt', 'bill'] },
+      { key: 'dateCol', label: 'Order Date', required: true, expectedType: 'date', hints: ['date', 'invoicedate', 'order_date', 'timestamp', 'created_at', 'purchase_date', 'time'] },
+      { key: 'totalAmountCol', label: 'Order Total Amount', required: true, expectedType: 'numeric', hints: ['total', 'amount', 'total_amount', 'spend', 'sales', 'revenue', 'order_total', 'value', 'gross_amount', 'net_amount', 'price'] },
+      { key: 'quantityCol', label: 'Order Item Quantity', required: false, expectedType: 'numeric', hints: ['quantity', 'qty', 'units', 'items', 'count'] }
+    ]
+  },
+  {
+    id: 'customer_rfm',
+    name: 'Customer Summary (RFM)',
+    badge: 'Pre-Aggregated Profile',
+    description: 'Pre-computed customer metrics table with Monetary, Frequency, and Recency/Last Purchase (e.g. CRM exports).',
+    icon: Users,
+    fields: [
+      { key: 'customerIdCol', label: 'Customer ID', required: true, expectedType: 'id', hints: ['customerid', 'customer', 'cust_id', 'user_id', 'client_id', 'account', 'email', 'id'] },
+      { key: 'monetaryCol', label: 'Cumulative Spend / Monetary', required: true, expectedType: 'numeric', hints: ['monetary', 'totalspend', 'spend', 'total_spend', 'revenue', 'sales', 'value', 'total'] },
+      { key: 'frequencyCol', label: 'Frequency / Order Count', required: true, expectedType: 'numeric', hints: ['frequency', 'orders', 'order_count', 'total_orders', 'transactions', 'count'] },
+      { key: 'recencyCol', label: 'Recency (Days Since Purchase)', required: false, expectedType: 'numeric', hints: ['recency', 'days_since_last', 'days_since_purchase', 'inactivity', 'days'] },
+      { key: 'lastPurchaseCol', label: 'Last Purchase Date', required: false, expectedType: 'date', hints: ['lastpurchase', 'last_purchase', 'date', 'latest_date', 'recent_date'] },
+      { key: 'clusterCol', label: 'Pre-assigned Segment / Cluster', required: false, expectedType: 'numeric', hints: ['cluster', 'segment', 'cohort', 'group', 'class'] }
+    ]
+  }
 ];
 
 export const ImportData = () => {
@@ -36,17 +81,121 @@ export const ImportData = () => {
   const [fileDetails, setFileDetails] = useState(null);
   const [parsedRows, setParsedRows] = useState([]);
   const [columns, setColumns] = useState([]);
-  const [columnMapping, setColumnMapping] = useState({
-    customerIdCol: '',
-    orderIdCol: '',
-    dateCol: '',
-    quantityCol: '',
-    unitPriceCol: ''
-  });
+  const [columnMetadata, setColumnMetadata] = useState({});
+  const [datasetMode, setDatasetMode] = useState('itemized');
+  const [autoMatchedFields, setAutoMatchedFields] = useState({});
+  const [columnMapping, setColumnMapping] = useState({});
   const [mappingErrors, setMappingErrors] = useState([]);
   const [processing, setProcessing] = useState(false);
   const [processError, setProcessError] = useState(null);
   const [importSuccess, setImportSuccess] = useState(false);
+
+  // Analyze dataset columns to detect data types, fill rates, and valid sample values
+  const inspectColumns = (cols, rows) => {
+    const meta = {};
+    const sampleRows = rows.slice(0, 100);
+
+    cols.forEach(col => {
+      const nonEmpties = [];
+      let numCount = 0;
+      let dateCount = 0;
+      let validCount = 0;
+
+      for (const r of sampleRows) {
+        const v = r[col];
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          validCount++;
+          const strVal = String(v).trim();
+          if (!nonEmpties.includes(strVal) && nonEmpties.length < 3) {
+            nonEmpties.push(strVal);
+          }
+
+          // Test numeric
+          if (!isNaN(Number(v))) {
+            numCount++;
+          }
+
+          // Test date
+          if (typeof v === 'string' && v.length >= 6 && parseDateString(v) !== null) {
+            dateCount++;
+          }
+        }
+      }
+
+      const fillRate = sampleRows.length > 0 ? Math.round((validCount / sampleRows.length) * 100) : 0;
+      let inferredType = 'text';
+      if (dateCount >= validCount * 0.7 && validCount > 0) {
+        inferredType = 'date';
+      } else if (numCount >= validCount * 0.75 && validCount > 0) {
+        inferredType = 'numeric';
+      }
+
+      meta[col] = {
+        name: col,
+        fillRate,
+        samples: nonEmpties,
+        inferredType,
+        validCount
+      };
+    });
+
+    return meta;
+  };
+
+  // Automatically detect the most fitting dataset schema mode
+  const detectDatasetMode = (cols) => {
+    const cleanCols = cols.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+    // Check for Customer RFM summary
+    const hasMonetary = cleanCols.some(c => ['monetary', 'totalspend', 'spend', 'revenue'].some(h => c.includes(h)));
+    const hasFrequency = cleanCols.some(c => ['frequency', 'orders', 'ordercount'].some(h => c.includes(h)));
+    const hasRecency = cleanCols.some(c => ['recency', 'lastpurchase'].some(h => c.includes(h)));
+    if (hasMonetary && hasFrequency && hasRecency) {
+      return 'customer_rfm';
+    }
+
+    // Check for Itemized Transactions (separate Quantity and Unit Price)
+    const hasQty = cleanCols.some(c => ['quantity', 'qty', 'units', 'items'].some(h => c.includes(h)));
+    const hasUnitPrice = cleanCols.some(c => ['unitprice', 'price', 'itemprice', 'rate'].some(h => c.includes(h)));
+    if (hasQty && hasUnitPrice) {
+      return 'itemized';
+    }
+
+    // Check for Order Totals (single amount)
+    const hasTotal = cleanCols.some(c => ['total', 'amount', 'totalamount', 'sales', 'revenue'].some(h => c.includes(h)));
+    if (hasTotal) {
+      return 'order_total';
+    }
+
+    return 'itemized';
+  };
+
+  // Auto-map columns to fields based on mode definitions and inferred types
+  const autoMapColumnsForMode = (modeId, cols) => {
+    const modeConfig = DATASET_MODES.find(m => m.id === modeId) || DATASET_MODES[0];
+    const mapping = {};
+    const autoMatched = {};
+    const usedCols = new Set();
+
+    modeConfig.fields.forEach(field => {
+      // Find candidate columns matching hints
+      const candidate = cols.find(col => {
+        if (usedCols.has(col) && field.required) return false;
+        const cleanCol = col.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return field.hints.some(h => cleanCol.includes(h.toLowerCase().replace(/[^a-z0-9]/g, '')));
+      });
+
+      if (candidate) {
+        mapping[field.key] = candidate;
+        autoMatched[field.key] = candidate;
+        usedCols.add(candidate);
+      } else {
+        mapping[field.key] = '';
+      }
+    });
+
+    return { mapping, autoMatched };
+  };
 
   // Drag and drop handlers
   const handleDragOver = (e) => {
@@ -96,29 +245,16 @@ export const ImportData = () => {
         }
 
         const detectedCols = results.meta.fields || Object.keys(results.data[0] || {});
+        const meta = inspectColumns(detectedCols, results.data);
+        const detectedMode = detectDatasetMode(detectedCols, meta);
+        const { mapping, autoMatched } = autoMapColumnsForMode(detectedMode, detectedCols, meta);
+
         setColumns(detectedCols);
+        setColumnMetadata(meta);
         setParsedRows(results.data);
-
-        // Auto-detect column mappings using fuzzy hints
-        const autoMap = {
-          customerIdCol: '',
-          orderIdCol: '',
-          dateCol: '',
-          quantityCol: '',
-          unitPriceCol: ''
-        };
-
-        CANONICAL_FIELDS.forEach(field => {
-          const matched = detectedCols.find(col => {
-            const cleanCol = col.toLowerCase().replace(/[^a-z0-9]/g, '');
-            return field.hints.some(h => cleanCol.includes(h.toLowerCase().replace(/[^a-z0-9]/g, '')));
-          });
-          if (matched) {
-            autoMap[field.key] = matched;
-          }
-        });
-
-        setColumnMapping(autoMap);
+        setDatasetMode(detectedMode);
+        setColumnMapping(mapping);
+        setAutoMatchedFields(autoMatched);
       },
       error: (err) => {
         setProcessError(`Failed to parse CSV file: ${err.message}`);
@@ -126,14 +262,38 @@ export const ImportData = () => {
     });
   };
 
+  // Handle switching dataset mode dynamically
+  const handleSwitchMode = (newModeId) => {
+    setDatasetMode(newModeId);
+    setProcessError(null);
+    setMappingErrors([]);
+    const { mapping, autoMatched } = autoMapColumnsForMode(newModeId, columns, columnMetadata);
+    setColumnMapping(mapping);
+    setAutoMatchedFields(autoMatched);
+  };
+
+  // Handle individual field column change
+  const handleFieldChange = (fieldKey, selectedColumn) => {
+    setColumnMapping(prev => ({ ...prev, [fieldKey]: selectedColumn }));
+    setProcessError(null);
+    setMappingErrors([]);
+  };
+
   // Validate mapping and execute customer segmentation
   const handleConfirmImport = () => {
+    const currentModeConfig = DATASET_MODES.find(m => m.id === datasetMode) || DATASET_MODES[0];
     const errors = [];
-    CANONICAL_FIELDS.forEach(f => {
+
+    currentModeConfig.fields.forEach(f => {
       if (f.required && !columnMapping[f.key]) {
         errors.push(`Please select a column for "${f.label}".`);
       }
     });
+
+    // Special validation for customer RFM mode: requires at least recencyCol OR lastPurchaseCol
+    if (datasetMode === 'customer_rfm' && !columnMapping.recencyCol && !columnMapping.lastPurchaseCol) {
+      errors.push('Please select at least one of "Recency" or "Last Purchase Date".');
+    }
 
     if (errors.length > 0) {
       setMappingErrors(errors);
@@ -145,8 +305,8 @@ export const ImportData = () => {
     setProcessError(null);
 
     try {
-      // Process transactions through the segmentation engine
-      const processed = processTransactions(parsedRows, columnMapping);
+      // Process through dynamic dataset pipeline
+      const processed = processDataset(parsedRows, columnMapping, datasetMode);
       
       // Update global application context
       applyCustomDataset(processed, fileDetails.name);
@@ -168,9 +328,14 @@ export const ImportData = () => {
     setFileDetails(null);
     setParsedRows([]);
     setColumns([]);
+    setColumnMetadata({});
+    setColumnMapping({});
+    setAutoMatchedFields({});
     setProcessError(null);
     setMappingErrors([]);
   };
+
+  const activeModeConfig = DATASET_MODES.find(m => m.id === datasetMode) || DATASET_MODES[0];
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto animate-fadeIn">
@@ -181,7 +346,7 @@ export const ImportData = () => {
             Import Store Transaction Data
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Upload your order history CSV to recalculate customer segments, metrics, and playbooks.
+            Upload any customer or order history CSV to recalculate customer segments, RFM scores, and playbooks.
           </p>
         </div>
 
@@ -231,7 +396,7 @@ export const ImportData = () => {
             Drag and drop your transaction CSV here
           </h3>
           <p className="text-xs text-slate-500 mb-4 max-w-sm mx-auto">
-            Compatible with exports from Shopify, WooCommerce, Square, Stripe, or standard accounting software.
+            Compatible with exports from Shopify, WooCommerce, Square, Stripe, or standard customer accounting software.
           </p>
           <button
             type="button"
@@ -241,13 +406,13 @@ export const ImportData = () => {
           </button>
 
           <div className="mt-6 pt-4 border-t border-slate-200/60 flex flex-wrap items-center justify-center gap-4 text-[11px] text-slate-400">
-            <span>Required: Customer ID, Order ID, Date, Quantity, Unit Price</span>
+            <span>Supports: Itemized line items, order totals, and customer RFM tables</span>
             <span>•</span>
-            <span>Max recommended file: 25 MB</span>
+            <span>Automatic schema detection</span>
           </div>
         </SaasCard>
       ) : (
-        /* File Uploaded & Column Mapping View */
+        /* File Uploaded & Dynamic Column Mapping View */
         <div className="space-y-6">
           {/* File Selected Badge */}
           <SaasCard className="p-4 flex items-center justify-between bg-white border-blue-200 shadow-xs">
@@ -263,7 +428,7 @@ export const ImportData = () => {
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
-                  Parsed <strong className="text-slate-800">{formatNumber(parsedRows.length)}</strong> transaction rows across <strong className="text-slate-800">{columns.length}</strong> columns.
+                  Parsed <strong className="text-slate-800">{formatNumber(parsedRows.length)}</strong> rows across <strong className="text-slate-800">{columns.length}</strong> parameters.
                 </div>
               </div>
             </div>
@@ -277,44 +442,145 @@ export const ImportData = () => {
             </button>
           </SaasCard>
 
-          {/* Column Mapping Section */}
+          {/* Dynamic Column Mapping Section */}
           <SaasCard className="p-6">
-            <div className="mb-4">
-              <h3 className="text-sm font-bold text-slate-900">
-                Map CSV Columns to Customer Intelligence Fields
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                We've automatically detected potential column matches. Please confirm or adjust each field below:
-              </p>
+            {/* Header & Schema Mode Switcher */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-4 border-b border-slate-100 mb-5">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Map CSV Columns to Customer Intelligence Fields
+                  </h3>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
+                    <Sparkles size={11} /> Auto-detected: {activeModeConfig.name}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  {activeModeConfig.description}
+                </p>
+              </div>
+
+              {/* Mode Toggle Tabs */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg self-start md:self-auto shrink-0">
+                {DATASET_MODES.map((mode) => {
+                  const Icon = mode.icon;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => handleSwitchMode(mode.id)}
+                      className={`px-2.5 py-1 text-[11px] font-medium rounded-md flex items-center gap-1.5 transition-all ${
+                        datasetMode === mode.id
+                          ? 'bg-white text-slate-900 font-semibold shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Icon size={12} className={datasetMode === mode.id ? 'text-blue-600' : 'text-slate-400'} />
+                      <span>{mode.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
+            {/* Dynamic Field Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {CANONICAL_FIELDS.map((field) => (
-                <div key={field.key} className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
-                    <span>{field.label} {field.required && <span className="text-rose-500">*</span>}</span>
-                    {columnMapping[field.key] && (
-                      <span className="text-[10px] text-emerald-600 flex items-center gap-1 font-normal">
-                        <Check size={11} /> Mapped
-                      </span>
+              {activeModeConfig.fields.map((field) => {
+                const selectedCol = columnMapping[field.key];
+                const colInfo = selectedCol ? columnMetadata[selectedCol] : null;
+                const isAutoMatched = autoMatchedFields[field.key] === selectedCol && selectedCol;
+
+                // Validate if selected column type matches field expectation
+                const isTypeMismatch = colInfo && field.expectedType === 'numeric' && colInfo.inferredType === 'text';
+
+                return (
+                  <div key={field.key} className="space-y-1.5 p-3 rounded-lg border border-slate-100 bg-slate-50/50 hover:bg-slate-50/80 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-slate-800 flex items-center gap-1">
+                        <span>{field.label}</span>
+                        {field.required && <span className="text-rose-500">*</span>}
+                      </label>
+                      
+                      {selectedCol ? (
+                        <span className={`text-[10px] flex items-center gap-1 px-1.5 py-0.5 rounded font-medium ${
+                          isAutoMatched
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-blue-50 text-blue-700 border border-blue-200'
+                        }`}>
+                          <Check size={10} /> {isAutoMatched ? '✨ Auto-detected' : '✓ Mapped'}
+                        </span>
+                      ) : (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-normal ${
+                          field.required ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {field.required ? 'Required' : 'Optional'}
+                        </span>
+                      )}
+                    </div>
+
+                    <select
+                      value={columnMapping[field.key] || ''}
+                      onChange={(e) => handleFieldChange(field.key, e.target.value)}
+                      className={`w-full text-xs p-2 rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600 ${
+                        columnMapping[field.key]
+                          ? isTypeMismatch ? 'border-amber-400 bg-amber-50/10' : 'border-slate-300'
+                          : field.required ? 'border-amber-300 bg-amber-50/20' : 'border-slate-200'
+                      }`}
+                    >
+                      <option value="">-- Select Column ({field.required ? 'Required' : 'Optional'}) --</option>
+                      {columns.map(col => {
+                        const meta = columnMetadata[col];
+                        const typeEmoji = meta?.inferredType === 'numeric' ? '🔢' : meta?.inferredType === 'date' ? '📅' : '🔤';
+                        const samplePreview = meta?.samples?.[0] ? `(e.g. ${meta.samples[0]})` : '';
+                        return (
+                          <option key={col} value={col}>
+                            {typeEmoji} {col} {samplePreview}
+                          </option>
+                        );
+                      })}
+                    </select>
+
+                    {/* Rich Data Information Box for Selected Column */}
+                    {colInfo ? (
+                      <div className="text-[11px] bg-white border border-slate-200/80 rounded-md p-2 space-y-1 shadow-2xs">
+                        <div className="flex items-center justify-between text-slate-600">
+                          <span className="flex items-center gap-1">
+                            <span className="text-slate-400 text-[10px]">Type:</span>
+                            <span className="font-semibold text-slate-800">
+                              {colInfo.inferredType === 'numeric' ? '🔢 Numeric' : colInfo.inferredType === 'date' ? '📅 Date / Time' : '🔤 Text / ID'}
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {colInfo.fillRate}% filled
+                          </span>
+                        </div>
+
+                        {colInfo.samples && colInfo.samples.length > 0 && (
+                          <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                            <span className="text-[10px] text-slate-400">Samples:</span>
+                            {colInfo.samples.map((s, idx) => (
+                              <span key={idx} className="px-1.5 py-0.2 bg-slate-100 text-slate-700 font-mono text-[10px] rounded border border-slate-200 max-w-[130px] truncate" title={s}>
+                                {s}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {isTypeMismatch && (
+                          <div className="text-[10px] text-amber-700 flex items-center gap-1 pt-0.5 font-medium">
+                            <AlertTriangle size={11} />
+                            <span>Warning: This field expects numbers, but selected column contains text.</span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-400 italic px-1 pt-0.5">
+                        Choose the parameter representing {field.label.toLowerCase()} in your CSV.
+                      </div>
                     )}
-                  </label>
-                  <select
-                    value={columnMapping[field.key]}
-                    onChange={(e) => setColumnMapping(prev => ({ ...prev, [field.key]: e.target.value }))}
-                    className={`w-full text-xs p-2 rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-600 ${
-                      columnMapping[field.key] ? 'border-slate-300' : 'border-amber-300 bg-amber-50/20'
-                    }`}
-                  >
-                    <option value="">-- Select Column --</option>
-                    {columns.map(col => (
-                      <option key={col} value={col}>
-                        {col} {parsedRows[0]?.[col] !== undefined ? `(e.g. ${String(parsedRows[0][col]).slice(0, 15)})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
 
             {/* Validation Errors */}
@@ -344,7 +610,7 @@ export const ImportData = () => {
                 Data Preview (First 5 Rows)
               </h4>
               <span className="text-[11px] text-slate-400">
-                Verify row values look correct
+                Verify row parameters look correct
               </span>
             </div>
             <div className="overflow-x-auto">
